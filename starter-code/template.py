@@ -105,29 +105,144 @@ class ToolCallingAgent:
         self.max_iterations = max_iterations
         self.trace: List[Dict[str, Any]] = []
 
+    def _detect_intents(self, user_input: str) -> Dict[str, Any]:
+        query = user_input.lower()
+        is_car = any(word in query for word in ("vinfast", "xe điện", "vf "))
+        is_travel = any(word in query for word in ("vinpearl", "resort", "du lịch"))
+        in_scope = is_car or is_travel or "vingroup" in query
+        needs_ticket = in_scope and any(word in query for word in (
+            "bị lỗi", "bị hỏng", "ẩm mốc", "phản hồi", "khiếu nại",
+            "tạo ticket", "hỗ trợ", "sự cố"
+        ))
+        wants_catalog = any(word in query for word in (
+            "xem", "tìm", "giá", "ngân sách", "bao nhiêu tiền", "sản phẩm"
+        ))
+        is_faq = any(word in query for word in ("bảo hành", "chính sách"))
+        needs_catalog = in_scope and (is_car or is_travel) and wants_catalog
+        # FAQ mentioning a product alone does not request catalog search.
+        if is_faq and not any(word in query for word in ("xem", "tìm", "giá", "ngân sách")):
+            needs_catalog = False
+        return {
+            "needs_catalog": needs_catalog,
+            "needs_ticket": needs_ticket,
+            "is_faq": is_faq and in_scope,
+            "in_scope": in_scope,
+            "category": "du_lich" if is_travel else "xe_dien"
+        }
+
+    def _catalog_args(self, user_input: str, category: str) -> Dict[str, Any]:
+        args = {"category": category}
+        budget = re.search(
+            r"(?:dưới|tối đa|không quá|ngân sách|giá)\s*(\d+(?:[.,]\d+)*)\s*(triệu|tỷ|tỉ|vnđ|đồng)?",
+            user_input, re.IGNORECASE
+        )
+        if budget:
+            amount, unit = budget.groups()
+            if unit and unit.lower() in ("triệu", "tỷ", "tỉ"):
+                multiplier = 1000000 if unit.lower() == "triệu" else 1000000000
+                args["max_price"] = round(float(amount.replace(",", ".")) * multiplier)
+            else:
+                args["max_price"] = int(amount.replace(".", "").replace(",", ""))
+        return args
+
+    def _ticket_args(self, user_input: str) -> Dict[str, Any]:
+        name = re.search(r"(?:tên tôi là|tôi tên(?: là)?)\s+([^,.:;!?\n]+)", user_input, re.IGNORECASE)
+        if not name:
+            return {}
+        # Preserve the customer's description rather than inventing a summary.
+        issue = user_input[name.end():].strip(" ,.:;!?\n")
+        if not issue:
+            return {"customer_name": name.group(1).strip()}
+        query = user_input.lower()
+        priority = "medium"
+        if any(word in query for word in ("mức độ thấp", "ưu tiên thấp", "không khẩn cấp")):
+            priority = "low"
+        elif any(word in query for word in ("nghiêm trọng", "khẩn cấp", "gấp")):
+            priority = "high"
+        return {
+            "customer_name": name.group(1).strip(),
+            "issue_description": issue,
+            "priority": priority
+        }
+
+    def _finish(self, answer: str, iterations: int, status: str) -> Dict[str, Any]:
+        self.trace.append({"iteration": iterations, "final_answer": answer})
+        return {"answer": answer, "trace": self.trace, "iterations": iterations, "status": status}
+
     def run(self, user_input: str) -> Dict[str, Any]:
         """Điểm vào chính — chạy Agent Loop."""
         self.trace = []
+        if self.max_iterations <= 0:
+            return self._finish("Đã đạt giới hạn số bước; chưa thực hiện yêu cầu.", 0, "max_iterations_reached")
 
-        # TODO 3: Phân tích intent từ user_input
-        #   - Xác định cần gọi tool nào (catalog? ticket? cả hai? FAQ?)
-        #   - Gợi ý: Dùng keyword matching hoặc regex
+        intents = self._detect_intents(user_input)
+        pending = []
+        answers = []
+        clarification = ""
+        if intents["needs_catalog"]:
+            pending.append(("search_product_catalog", self._catalog_args(user_input, intents["category"])))
+        if intents["needs_ticket"]:
+            args = self._ticket_args(user_input)
+            if not args.get("customer_name"):
+                clarification = "Vui lòng cho biết tên khách hàng để tạo ticket hỗ trợ."
+            elif not args.get("issue_description"):
+                clarification = "Vui lòng mô tả vấn đề cần hỗ trợ để tạo ticket."
+            else:
+                pending.append(("submit_support_ticket", args))
 
-        # TODO 4: Xây dựng Agent Loop (while iteration <= self.max_iterations)
-        #   - Iteration 1: Gọi tool #1 nếu cần (search_product_catalog)
-        #   - Iteration 2: Gọi tool #2 nếu cần (submit_support_ticket)
-        #   - Iteration 3+: Tổng hợp Final Answer từ trace
-        #   - Lưu mỗi bước vào self.trace
+        if not pending:
+            if clarification:
+                return self._finish(clarification, 1, "needs_clarification")
+            if intents["is_faq"]:
+                answer = "Mình chưa có thông tin xác nhận về chính sách bảo hành cụ thể. Bạn vui lòng kiểm tra tài liệu bảo hành hoặc liên hệ bộ phận hỗ trợ của hãng."
+            elif intents["in_scope"]:
+                answer = "Bạn muốn tra cứu sản phẩm VinFast/Vinpearl hay ghi nhận yêu cầu hỗ trợ?"
+            else:
+                answer = "Mình chỉ hỗ trợ sản phẩm và dịch vụ thuộc Vingroup, như VinFast và Vinpearl."
+            return self._finish(answer, 1, "completed")
 
-        # Skeleton return
-        self.trace.append({"step": "init", "user_input": user_input})
-        return {
-            "answer": "TODO: Implement ToolCallingAgent loop",
-            "trace": self.trace,
-            "iterations": 0,
-            "status": "not_implemented"
-        }
+        iteration = 0
+        has_error = False
+        while iteration < self.max_iterations and iteration < len(pending):
+            name, args = pending[iteration]
+            iteration += 1
+            try:
+                observation = TOOL_MAP[name](**args)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                observation = {"error": str(exc)}
+            self.trace.append({
+                "iteration": iteration,
+                "thought": "Tra cứu sản phẩm phù hợp." if name == "search_product_catalog" else "Ghi nhận yêu cầu hỗ trợ.",
+                "action": {"name": name, "args": args},
+                "observation": observation
+            })
+            error = observation.get("error") if isinstance(observation, dict) else next(
+                (item["error"] for item in observation if "error" in item), None
+            )
+            if error is not None:
+                has_error = True
+                answers.append(f"Không thể thực hiện {name}: {error}")
+            elif name == "search_product_catalog":
+                if observation:
+                    answers.extend(f"- {p['name']}: {p['price_vnd']:,} VNĐ" for p in observation)
+                else:
+                    answers.append("Rất tiếc, không tìm thấy sản phẩm phù hợp. Bạn có thể thay đổi ngân sách hoặc danh mục.")
+            else:
+                answers.append(f"Đã tạo ticket {observation['ticket_id']} cho {observation['customer_name']}; trạng thái: {observation['status']}, ưu tiên: {observation['priority']}.")
 
+        if clarification:
+            answers.append(clarification)
+        if iteration < len(pending):
+            remaining = ", ".join(name for name, _ in pending[iteration:])
+            answers.append(f"Đã đạt giới hạn số bước. Chưa thực hiện: {remaining}.")
+            status = "max_iterations_reached"
+        elif has_error:
+            status = "tool_error"
+        elif clarification:
+            status = "needs_clarification"
+        else:
+            status = "completed"
+        return self._finish("\n".join(answers), iteration, status)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN — Chạy thử nhanh
