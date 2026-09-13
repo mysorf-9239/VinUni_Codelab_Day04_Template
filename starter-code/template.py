@@ -78,10 +78,16 @@ class ChatbotBaseline:
     """Baseline LLM Chatbot — Không sử dụng Tool Calling hay ReAct Loop."""
 
     def query(self, user_input: str) -> Dict[str, Any]:
-        # TODO 2: Trả về câu trả lời tĩnh (mock) hoặc gọi Gemini API 1 lượt (không dùng tool)
-        # Mục tiêu: Quan sát hiện tượng bịa thông tin (hallucination)
+        query = user_input.lower()
+        if any(keyword in query for keyword in ("vinfast", "xe điện", "vf ")):
+            answer = "VinFast VF 8 có giá 500 triệu đồng, phù hợp ngân sách dưới 600 triệu."
+        elif any(keyword in query for keyword in ("vinpearl", "resort", "du lịch")):
+            answer = "Vinpearl Luxury Landmark 81 có giá 4 triệu đồng cho kỳ nghỉ 2N1Đ."
+        else:
+            answer = "Bạn có thể tham khảo các sản phẩm VinFast và dịch vụ nghỉ dưỡng Vinpearl."
+
         return {
-            "answer": f"[Chatbot Baseline] Trả lời cho: {user_input}",
+            "answer": f"[Baseline mock — dữ liệu minh họa, chưa kiểm chứng] {answer}",
             "tool_calls": [],
             "status": "success",
             "mode": "mock_baseline"
